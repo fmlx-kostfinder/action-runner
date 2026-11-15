@@ -74,6 +74,13 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      - name: Setup SkiaSharp native assets for Linux runner
+        if: steps.check_image.outputs.should_push == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfontconfig1
+          dotnet add KostFinder.Tests/KostFinder.Tests.csproj package SkiaSharp.NativeAssets.Linux.NoDependencies --version 4.155.0
+
       - name: Run Unit Tests
         if: steps.check_image.outputs.should_push == 'true'
         run: |
