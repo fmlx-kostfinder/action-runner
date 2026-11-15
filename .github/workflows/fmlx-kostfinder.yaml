@@ -22,10 +22,10 @@ env:
 
 jobs:
   # ==========================================
-  # JOB 1: BUILD API
+  # JOB 1: TEST API
   # ==========================================
-  build-api:
-    name: Build API Image
+  test-api:
+    name: Run API Unit Tests
     runs-on: ubuntu-latest
     outputs:
       commit_sha: ${{ steps.get_sha.outputs.commit_sha }}
@@ -61,38 +61,64 @@ jobs:
           IMAGE_API="${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend-${{ env.COMMIT_SHA }}"
           echo "Checking image manifest: $IMAGE_API"
           if docker manifest inspect $IMAGE_API > /dev/null 2>&1; then
-            echo "API image for commit ${{ env.COMMIT_SHA }} already exists on Docker Hub. Skipping build."
+            echo "API image for commit ${{ env.COMMIT_SHA }} already exists on Docker Hub. Skipping tests and build."
             echo "should_push=false" >> $GITHUB_OUTPUT
           else
-            echo "API image not found on Docker Hub. Proceeding with build."
+            echo "API image not found on Docker Hub. Proceeding with tests."
             echo "should_push=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Set up Docker Buildx
+      - name: Set up .NET 8
         if: steps.check_image.outputs.should_push == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Run Unit Tests
+        if: steps.check_image.outputs.should_push == 'true'
+        run: |
+          dotnet test KostFinder.Tests/KostFinder.Tests.csproj --configuration Release --nologo --verbosity normal
+
+  # ==========================================
+  # JOB 2: BUILD API
+  # ==========================================
+  build-api:
+    name: Build API Image
+    needs: test-api
+    if: needs.test-api.outputs.should_push == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine Branch
+        run: |
+          TARGET_BRANCH="${{ github.event.inputs.branch || env.DEFAULT_BRANCH }}"
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+
+      - name: Checkout Code from GitLab
+        run: |
+          CLEAN_REPO_URL=$(echo "${{ secrets.GITLAB_REPO_URL }}" | sed -E 's#^https?://##')
+          git clone --branch ${{ env.TARGET_BRANCH }} --depth 1 "https://oauth2:${{ secrets.GITLAB_TOKEN }}@${CLEAN_REPO_URL}" .
+
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Build KostFinder.API
-        if: steps.check_image.outputs.should_push == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: KostFinder.API/Dockerfile
+          file: ./KostFinder.API/Dockerfile
           load: true
           tags: |
-            ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend-${{ env.COMMIT_SHA }}
+            ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend-${{ needs.test-api.outputs.commit_sha }}
             ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend
 
       - name: Save API Docker Image to Tarball
-        if: steps.check_image.outputs.should_push == 'true'
         run: |
           docker save \
-            ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend-${{ env.COMMIT_SHA }} \
+            ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend-${{ needs.test-api.outputs.commit_sha }} \
             ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend \
             -o api-image.tar
 
       - name: Upload API Image Artifact
-        if: steps.check_image.outputs.should_push == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: api-docker-image
@@ -100,12 +126,12 @@ jobs:
           retention-days: 1
 
   # ==========================================
-  # JOB 2: PUSH API
+  # JOB 3: PUSH API
   # ==========================================
   push-api:
     name: Push API Image
-    needs: build-api
-    if: needs.build-api.outputs.should_push == 'true'
+    needs: [test-api, build-api]
+    if: needs.test-api.outputs.should_push == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download API Image Artifact
@@ -126,11 +152,11 @@ jobs:
 
       - name: Push API Image to Docker Hub
         run: |
-          docker push ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend-${{ needs.build-api.outputs.commit_sha }}
+          docker push ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend-${{ needs.test-api.outputs.commit_sha }}
           docker push ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend
 
   # ==========================================
-  # JOB 3: BUILD WEB
+  # JOB 4: BUILD WEB
   # ==========================================
   build-web:
     name: Build Web Image
@@ -185,7 +211,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./KostFinder.Web
-          file: KostFinder.Web/Dockerfile
+          file: ./KostFinder.Web/Dockerfile
           load: true
           build-args: |
             VITE_API_BASE_URL=${{ env.VITE_API_BASE_URL }}
@@ -210,7 +236,7 @@ jobs:
           retention-days: 1
 
   # ==========================================
-  # JOB 4: PUSH WEB
+  # JOB 5: PUSH WEB
   # ==========================================
   push-web:
     name: Push Web Image
