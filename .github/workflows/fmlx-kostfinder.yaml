@@ -8,8 +8,8 @@ on:
         required: false
         default: "feat/OP-165433_admin-and-hr-can-create-and-update-kost"
   schedule:
-    # Run every 10 minutes starting at minute 5 (5, 15, 25, 35, 45, 55)
-    - cron: "5-59/10 * * * *"
+    # Run every 10 minutes (at minutes 5, 15, 25, 35, 45, 55)
+    - cron: "5,15,25,35,45,55 * * * *"
   repository_dispatch:
     types: [gitlab_push]
 
