@@ -6,7 +6,7 @@ on:
       branch:
         description: "GitLab branch to build"
         required: false
-        default: "feat/OP-165433_admin-and-hr-can-create-and-update-kost"
+        default: "feat/develop"
   schedule:
     # Run every 10 minutes (at minutes 5, 15, 25, 35, 45, 55)
     - cron: "5,15,25,35,45,55 * * * *"
