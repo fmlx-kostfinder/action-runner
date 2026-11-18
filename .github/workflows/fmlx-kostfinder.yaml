@@ -8,15 +8,15 @@ on:
         required: false
         default: "develop"
   # schedule:
-    # Run every 10 minutes (at minutes 5, 15, 25, 35, 45, 55)
-    # - cron: "5,15,25,35,45,55 * * * *"
+  # Run every 10 minutes (at minutes 5, 15, 25, 35, 45, 55)
+  # - cron: "5,15,25,35,45,55 * * * *"
   repository_dispatch:
     types: [gitlab_push]
 
 env:
   GITLAB_REPO_URL: ${{ secrets.GITLAB_REPO_URL }}
   GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
-  DEFAULT_BRANCH: "feat/OP-165433_admin-and-hr-can-create-and-update-kost"
+  DEFAULT_BRANCH: "develop"
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
   VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
 
@@ -163,10 +163,10 @@ jobs:
           docker push ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:backend
 
   # ==========================================
-  # JOB 4: BUILD WEB
+  # JOB 4: TEST WEB
   # ==========================================
-  build-web:
-    name: Build Web Image
+  test-web:
+    name: Run Web Unit Tests
     runs-on: ubuntu-latest
     outputs:
       commit_sha: ${{ steps.get_sha.outputs.commit_sha }}
@@ -209,12 +209,47 @@ jobs:
             echo "should_push=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Set up Docker Buildx
+      - name: Set up Node.js
         if: steps.check_image.outputs.should_push == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: KostFinder.Web/package-lock.json
+
+      - name: Install Web dependencies
+        if: steps.check_image.outputs.should_push == 'true'
+        working-directory: KostFinder.Web
+        run: npm ci
+
+      - name: Run Web Unit Tests
+        if: steps.check_image.outputs.should_push == 'true'
+        working-directory: KostFinder.Web
+        run: npm test
+
+  # ==========================================
+  # JOB 5: BUILD WEB
+  # ==========================================
+  build-web:
+    name: Build Web Image
+    needs: test-web
+    if: needs.test-web.outputs.should_push == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine Branch
+        run: |
+          TARGET_BRANCH="${{ github.event.inputs.branch || env.DEFAULT_BRANCH }}"
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+
+      - name: Checkout Code from GitLab
+        run: |
+          CLEAN_REPO_URL=$(echo "${{ secrets.GITLAB_REPO_URL }}" | sed -E 's#^https?://##')
+          git clone --branch ${{ env.TARGET_BRANCH }} --depth 1 "https://oauth2:${{ secrets.GITLAB_TOKEN }}@${CLEAN_REPO_URL}" .
+
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Build KostFinder.Web
-        if: steps.check_image.outputs.should_push == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./KostFinder.Web
@@ -223,19 +258,17 @@ jobs:
           build-args: |
             VITE_API_BASE_URL=${{ env.VITE_API_BASE_URL }}
           tags: |
-            ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:frontend-${{ env.COMMIT_SHA }}
+            ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:frontend-${{ needs.test-web.outputs.commit_sha }}
             ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:frontend
 
       - name: Save Web Docker Image to Tarball
-        if: steps.check_image.outputs.should_push == 'true'
         run: |
           docker save \
-            ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:frontend-${{ env.COMMIT_SHA }} \
+            ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:frontend-${{ needs.test-web.outputs.commit_sha }} \
             ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:frontend \
             -o web-image.tar
 
       - name: Upload Web Image Artifact
-        if: steps.check_image.outputs.should_push == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: web-docker-image
@@ -243,12 +276,12 @@ jobs:
           retention-days: 1
 
   # ==========================================
-  # JOB 5: PUSH WEB
+  # JOB 6: PUSH WEB
   # ==========================================
   push-web:
     name: Push Web Image
-    needs: build-web
-    if: needs.build-web.outputs.should_push == 'true'
+    needs: [test-web, build-web]
+    if: needs.test-web.outputs.should_push == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download Web Image Artifact
@@ -269,5 +302,5 @@ jobs:
 
       - name: Push Web Image to Docker Hub
         run: |
-          docker push ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:frontend-${{ needs.build-web.outputs.commit_sha }}
+          docker push ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:frontend-${{ needs.test-web.outputs.commit_sha }}
           docker push ${{ env.DOCKERHUB_USERNAME }}/fmlx-kostfinder:frontend
